@@ -374,7 +374,6 @@ def create_features(
     df = add_bert_features(df, train_df, descriptions_df)
     df = handle_missing_values(df, train_df)
 
-    # Convert categorical columns to pandas 'category' dtype for LightGBM
     for col in config.CAT_FEATURES:
         if col in df.columns:
             df[col] = df[col].astype("category")

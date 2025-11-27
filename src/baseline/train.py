@@ -1,11 +1,11 @@
 """
-Main training script for the LightGBM model.
+Main training script for the CatBoost model.
 
 Uses temporal split with absolute date threshold to ensure methodologically
 correct validation without data leakage from future timestamps.
 """
 
-import lightgbm as lgb
+from catboost import CatBoostRegressor
 import numpy as np
 import pandas as pd
 from sklearn.metrics import mean_absolute_error, mean_squared_error
@@ -20,7 +20,7 @@ def train() -> None:
 
     Loads prepared data from data/processed/, performs temporal split based on
     absolute date threshold, computes aggregate features on train split only,
-    and trains a single LightGBM model. This ensures methodologically correct
+    and trains a single CatBoost model. This ensures methodologically correct
     validation without data leakage from future timestamps.
 
     Note: Data must be prepared first using prepare_data.py
@@ -77,7 +77,7 @@ def train() -> None:
             f"Temporal split validation failed: min validation timestamp ({min_val_timestamp}) "
             f"is not greater than max train timestamp ({max_train_timestamp})."
         )
-    print("✅ Temporal split validation passed: all validation timestamps are after train timestamps")
+    print("Temporal split validation passed: all validation timestamps are after train timestamps")
 
     # Compute aggregate features on train split only (to prevent data leakage)
     print("\nComputing aggregate features on train split only...")
@@ -89,13 +89,15 @@ def train() -> None:
     train_split_final = handle_missing_values(train_split_with_agg, train_split)
     val_split_final = handle_missing_values(val_split_with_agg, train_split)
 
-    # Define features (X) and target (y)
-    # Exclude timestamp, source, target, prediction columns
+    # Exclude timestamp, source, target, prediction columns, user_id and book_id
+
     exclude_cols = [
         constants.COL_SOURCE,
         config.TARGET,
         constants.COL_PREDICTION,
         constants.COL_TIMESTAMP,
+        constants.COL_USER_ID, 
+        constants.COL_BOOK_ID, 
     ]
     features = [col for col in train_split_final.columns if col not in exclude_cols]
 
@@ -103,30 +105,41 @@ def train() -> None:
     non_feature_object_cols = train_split_final[features].select_dtypes(include=["object"]).columns.tolist()
     features = [f for f in features if f not in non_feature_object_cols]
 
-    X_train = train_split_final[features]
+    X_train = train_split_final[features].copy()
     y_train = train_split_final[config.TARGET]
-    X_val = val_split_final[features]
+    X_val = val_split_final[features].copy()
     y_val = val_split_final[config.TARGET]
+
+    # Convert categorical features to strings for CatBoost
+    for col in config.CAT_FEATURES:
+        if col in X_train.columns:
+
+            X_train[col] = X_train[col].astype(object).astype(str).replace("nan", constants.MISSING_CAT_VALUE)
+            X_val[col] = X_val[col].astype(object).astype(str).replace("nan", constants.MISSING_CAT_VALUE)
 
     print(f"Training features: {len(features)}")
 
-    # Ensure model directory exists
     config.MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Train single model
-    print("\nTraining LightGBM model...")
-    model = lgb.LGBMRegressor(**config.LGB_PARAMS)
+    print("\nTraining CatBoost model...")
+    
+    # included pbar
+    model_params = config.CATBOOST_PARAMS.copy()
+    model_params["verbose"] = 10  # pbar every 10 iterations
+    
+    model = CatBoostRegressor(**model_params)
 
-    # Update fit params with early stopping callback
-    fit_params = config.LGB_FIT_PARAMS.copy()
-    fit_params["callbacks"] = [lgb.early_stopping(stopping_rounds=config.EARLY_STOPPING_ROUNDS, verbose=False)]
+    cat_features_indices = [
+        i for i, col in enumerate(features) if col in config.CAT_FEATURES
+    ]
 
+    fit_params = config.CATBOOST_FIT_PARAMS.copy()
     model.fit(
         X_train,
         y_train,
-        eval_set=[(X_val, y_val)],
-        eval_metric=fit_params["eval_metric"],
-        callbacks=fit_params["callbacks"],
+        eval_set=(X_val, y_val),
+        cat_features=cat_features_indices if cat_features_indices else None,
+        **fit_params,
     )
 
     # Evaluate the model
@@ -137,7 +150,7 @@ def train() -> None:
 
     # Save the trained model
     model_path = config.MODEL_DIR / config.MODEL_FILENAME
-    model.booster_.save_model(str(model_path))
+    model.save_model(str(model_path))
     print(f"Model saved to {model_path}")
 
     print("\nTraining complete.")

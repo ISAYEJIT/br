@@ -35,7 +35,7 @@ def prepare_data() -> None:
 
     # Apply feature engineering WITHOUT aggregates
     # Aggregates will be computed during training on train split only
-    featured_df = create_features(merged_df, book_genres_df, descriptions_df, include_aggregates=False)
+    featured_df = create_features(merged_df, book_genres_df, descriptions_df, include_aggregates=True)
 
     # Ensure processed directory exists
     config.PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)

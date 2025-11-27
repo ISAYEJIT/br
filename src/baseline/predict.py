@@ -5,7 +5,7 @@ Computes aggregate features on all train data and applies them to test set,
 then generates predictions using the trained model.
 """
 
-import lightgbm as lgb
+from catboost import CatBoostRegressor
 import numpy as np
 import pandas as pd
 
@@ -52,11 +52,14 @@ def predict() -> None:
     test_set_final = handle_missing_values(test_set_with_agg, train_set)
 
     # Define features (exclude source, target, prediction, timestamp columns)
+    # ВАЖНО: Исключаем user_id и book_id - они вызывают переобучение!
     exclude_cols = [
         constants.COL_SOURCE,
         config.TARGET,
         constants.COL_PREDICTION,
         constants.COL_TIMESTAMP,
+        constants.COL_USER_ID,  # Исключаем: вызывает переобучение
+        constants.COL_BOOK_ID,  # Исключаем: вызывает переобучение
     ]
     features = [col for col in test_set_final.columns if col not in exclude_cols]
 
@@ -64,7 +67,13 @@ def predict() -> None:
     non_feature_object_cols = test_set_final[features].select_dtypes(include=["object"]).columns.tolist()
     features = [f for f in features if f not in non_feature_object_cols]
 
-    X_test = test_set_final[features]
+    X_test = test_set_final[features].copy()
+
+    for col in config.CAT_FEATURES:
+        if col in X_test.columns:
+            # Convert to string first (NaN becomes "nan"), then replace with missing value
+            X_test[col] = X_test[col].astype(object).astype(str).replace("nan", constants.MISSING_CAT_VALUE)
+
     print(f"Prediction features: {len(features)}")
 
     # Load trained model
@@ -75,7 +84,8 @@ def predict() -> None:
         )
 
     print(f"\nLoading model from {model_path}...")
-    model = lgb.Booster(model_file=str(model_path))
+    model = CatBoostRegressor()
+    model.load_model(str(model_path))
 
     # Generate predictions
     print("Generating predictions...")
