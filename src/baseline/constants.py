@@ -16,6 +16,7 @@ BOOK_DESCRIPTIONS_FILENAME = "book_descriptions.csv"
 SUBMISSION_FILENAME = "submission.csv"
 TFIDF_VECTORIZER_FILENAME = "tfidf_vectorizer.pkl"
 BERT_EMBEDDINGS_FILENAME = "bert_embeddings.pkl"
+BERT_PCA_FILENAME = "bert_pca.pkl"
 UBCF_CACHE_FILENAME = "ubcf_cache.pkl"
 BERT_MODEL_NAME = "DeepPavlov/rubert-base-cased"
 PROCESSED_DATA_FILENAME = "processed_features.parquet"
@@ -37,6 +38,16 @@ F_BOOK_MEAN_RATING = "book_mean_rating"
 F_BOOK_RATINGS_COUNT = "book_ratings_count"
 F_AUTHOR_MEAN_RATING = "author_mean_rating"
 F_BOOK_GENRES_COUNT = "book_genres_count"
+
+# --- UBCF feature names ---
+F_UBCF_SCORE = "ubcf_score"
+F_UBCF_COUNT = "ubcf_similar_users_count"
+F_UBCF_STD = "ubcf_rating_std"
+F_UBCF_MAX_SIM = "ubcf_max_similarity"
+
+# --- IBCF feature names ---
+F_IBCF_SCORE = "ibcf_score"
+F_IBCF_COUNT = "ibcf_similar_books_count"
 
 # Metadata columns from raw data
 COL_GENDER = "gender"

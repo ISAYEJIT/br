@@ -8,7 +8,9 @@ import joblib
 import numpy as np
 import pandas as pd
 import torch
+from sklearn.decomposition import PCA
 from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
@@ -75,55 +77,43 @@ def add_genre_features(df: pd.DataFrame, book_genres_df: pd.DataFrame) -> pd.Dat
     return df.merge(genre_counts, on=constants.COL_BOOK_ID, how="left")
 
 
-def add_ubcf_features(df: pd.DataFrame, train_df: pd.DataFrame, n_similar_users: int = 30) -> pd.DataFrame:
+def add_ubcf_features(
+    df: pd.DataFrame, 
+    train_df: pd.DataFrame, 
+    n_similar_users: int = 30,
+    use_timestamp_filtering: bool = True
+) -> pd.DataFrame:
     """Adds User-Based Collaborative Filtering features.
-    
-    Computes similarity-based features using ratings from similar users.
-    This is more generalizable than TF-IDF and helps reduce overfitting.
-    Caches computed matrices to disk for faster subsequent runs.
-    
-    Args:
-        df (pd.DataFrame): The main DataFrame to add features to.
-        train_df (pd.DataFrame): The training portion for computing user similarities.
-        n_similar_users (int): Number of similar users to consider. Defaults to 30.
-    
-    Returns:
-        pd.DataFrame: The DataFrame with UBCF features added.
     """
-    print("Adding UBCF features...")
+    print("Adding improved UBCF features (no feature cache)...")
     
-    from sklearn.metrics.pairwise import cosine_similarity
-    
-    # Ensure model directory exists
     config.MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    ubcf_cache_path = config.MODEL_DIR / constants.UBCF_CACHE_FILENAME
+    similarity_cache_path = config.MODEL_DIR / "ubcf_similarity_only.pkl"
     
-    # Check if UBCF cache exists
-    if ubcf_cache_path.exists():
-        print(f"Loading UBCF cache from {ubcf_cache_path}")
-        ubcf_cache = joblib.load(ubcf_cache_path)
-        user_book_matrix = ubcf_cache["user_book_matrix"]
-        top_similar_users_dict = ubcf_cache["top_similar_users_dict"]
-        print(f"Loaded cached UBCF data: {len(user_book_matrix)} users, {len(user_book_matrix.columns)} books")
+    # Step 1: Load or compute user similarities (ONLY similarities, not features)
+    if similarity_cache_path.exists():
+        print(f"Loading user similarity cache from {similarity_cache_path}")
+        cache = joblib.load(similarity_cache_path)
+        top_similar_users_dict = cache["top_similar_users"]
+        print(f"Loaded similarities for {len(top_similar_users_dict)} users")
     else:
-        print("Computing UBCF matrices (this may take a while)...")
+        print("Computing user similarities from training data...")
         
-        # Create user-book rating matrix from training data
-        print("Building user-book rating matrix...")
-        user_book_ratings = train_df.groupby([constants.COL_USER_ID, constants.COL_BOOK_ID])[config.TARGET].first().reset_index()
+        # Only use has_read=1 ratings for similarity
+        rated_train = train_df[train_df[constants.COL_HAS_READ] == 1].copy()
         
-        # Create pivot table (only for users and books that exist in train)
-        user_book_matrix = user_book_ratings.pivot_table(
+        # Build user-book rating matrix
+        print("Building user-book matrix...")
+        user_book_matrix = rated_train.pivot_table(
             index=constants.COL_USER_ID,
             columns=constants.COL_BOOK_ID,
             values=config.TARGET,
             fill_value=0
         )
+        print(f"Matrix shape: {user_book_matrix.shape}")
         
-        print(f"User-book matrix shape: {user_book_matrix.shape}")
-        
-        # Compute user-user similarity using cosine similarity
-        print("Computing user-user similarities...")
+        # Compute cosine similarity between users
+        print("Computing cosine similarities...")
         user_similarity = cosine_similarity(user_book_matrix.values)
         user_similarity_df = pd.DataFrame(
             user_similarity,
@@ -131,69 +121,228 @@ def add_ubcf_features(df: pd.DataFrame, train_df: pd.DataFrame, n_similar_users:
             columns=user_book_matrix.index
         )
         
-        # Precompute top similar users for each user
-        print("Precomputing top similar users...")
+        # Store only top-K similar users for each user
+        print(f"Extracting top {n_similar_users} similar users...")
         top_similar_users_dict = {}
-        for user_id in tqdm(user_similarity_df.index, desc="Precomputing similarities"):
+        for user_id in tqdm(user_similarity_df.index, desc="Processing users"):
             user_sims = user_similarity_df.loc[user_id].sort_values(ascending=False)
-            user_sims = user_sims[user_sims.index != user_id]  # Exclude self
-            top_similar_users_dict[user_id] = user_sims.head(n_similar_users)
+            # Exclude self-similarity
+            user_sims = user_sims[user_sims.index != user_id]
+            # Store top K as dict {similar_user_id: similarity_score}
+            top_similar_users_dict[user_id] = user_sims.head(n_similar_users).to_dict()
         
-        # Save cache
-        print(f"Saving UBCF cache to {ubcf_cache_path}")
-        ubcf_cache = {
-            "user_book_matrix": user_book_matrix,
-            "top_similar_users_dict": top_similar_users_dict,
-        }
-        joblib.dump(ubcf_cache, ubcf_cache_path)
-        print("UBCF cache saved successfully")
+        # Save only similarity information
+        print(f"Saving similarity cache to {similarity_cache_path}")
+        joblib.dump(
+            {"top_similar_users": top_similar_users_dict},
+            similarity_cache_path
+        )
+        print("Similarity cache saved")
     
-    # For each row in df, compute UBCF-based prediction
+    # Step 2: Prepare rating lookup for dynamic feature computation
+    print("Preparing rating lookup...")
+    rated_train = train_df[train_df[constants.COL_HAS_READ] == 1].copy()
+    
+    if use_timestamp_filtering and constants.COL_TIMESTAMP in rated_train.columns:
+        # Convert timestamp to datetime for filtering
+        rated_train[constants.COL_TIMESTAMP] = pd.to_datetime(rated_train[constants.COL_TIMESTAMP])
+        has_timestamps = True
+        print("Temporal filtering enabled - will use only past ratings")
+    else:
+        has_timestamps = False
+        print("Temporal filtering disabled - using all training ratings")
+    
+    # Create efficient lookup: (user_id, book_id) -> rating
+    rating_lookup = {}
+    timestamp_lookup = {}
+    
+    for _, row in rated_train.iterrows():
+        key = (row[constants.COL_USER_ID], row[constants.COL_BOOK_ID])
+        rating_lookup[key] = row[config.TARGET]
+        if has_timestamps:
+            timestamp_lookup[key] = row[constants.COL_TIMESTAMP]
+    
+    # Step 3: Compute features dynamically for ALL rows
+    print(f"Computing UBCF features for {len(df)} rows...")
+    
+    # Convert df timestamps if needed
+    if has_timestamps and constants.COL_TIMESTAMP in df.columns:
+        df_timestamps = pd.to_datetime(df[constants.COL_TIMESTAMP])
+    else:
+        df_timestamps = [None] * len(df)
+    
     ubcf_scores = []
     ubcf_counts = []
+    ubcf_stds = []  # NEW: standard deviation of similar users' ratings
+    ubcf_max_sim = []  # NEW: max similarity score among users who rated this book
     
-    print(f"Computing UBCF scores for {len(df)} rows...")
-    for idx, row in tqdm(df.iterrows(), total=len(df), desc="UBCF"):
+    for idx, (_, row) in enumerate(tqdm(df.iterrows(), total=len(df), desc="UBCF features")):
+        user_id = row[constants.COL_USER_ID]
+        book_id = row[constants.COL_BOOK_ID]
+        current_timestamp = df_timestamps[idx]
+        
+        score = np.nan
+        count = 0
+        ratings_list = []
+        max_similarity = 0.0
+        
+        # Check if we have similar users for this user
+        if user_id in top_similar_users_dict:
+            similar_users = top_similar_users_dict[user_id]
+            
+            # Collect ratings from similar users
+            for similar_user_id, similarity_score in similar_users.items():
+                lookup_key = (similar_user_id, book_id)
+                
+                # Check if similar user rated this book
+                if lookup_key in rating_lookup:
+                    rating = rating_lookup[lookup_key]
+                    
+                    # Temporal filtering: only use past ratings
+                    if has_timestamps and current_timestamp is not None:
+                        rating_timestamp = timestamp_lookup.get(lookup_key)
+                        if rating_timestamp is not None and rating_timestamp >= current_timestamp:
+                            continue  # Skip future ratings
+                    
+                    ratings_list.append(rating)
+                    count += 1
+                    max_similarity = max(max_similarity, similarity_score)
+            
+            # Compute weighted average if we have ratings
+            if ratings_list:
+                # Simple mean (you can also do weighted by similarity)
+                score = np.mean(ratings_list)
+        
+        # Compute standard deviation (measure of agreement)
+        std = np.std(ratings_list) if len(ratings_list) > 1 else 0.0
+        
+        ubcf_scores.append(score)
+        ubcf_counts.append(count)
+        ubcf_stds.append(std)
+        ubcf_max_sim.append(max_similarity if count > 0 else 0.0)
+    
+    # Add features to dataframe
+    df[constants.F_UBCF_SCORE] = ubcf_scores
+    df[constants.F_UBCF_COUNT] = ubcf_counts
+    df[constants.F_UBCF_STD] = ubcf_stds
+    df[constants.F_UBCF_MAX_SIM] = ubcf_max_sim
+    
+    print(f"UBCF features added:")
+    print(f"  - {constants.F_UBCF_SCORE}: avg rating from similar users")
+    print(f"  - {constants.F_UBCF_COUNT}: number of similar users who rated")
+    print(f"  - {constants.F_UBCF_STD}: std of ratings (agreement measure)")
+    print(f"  - {constants.F_UBCF_MAX_SIM}: max similarity score")
+    print(f"Coverage: {(~pd.Series(ubcf_scores).isna()).mean():.2%} of rows have UBCF scores")
+    
+    return df
+
+
+def add_ibcf_features(
+    df: pd.DataFrame,
+    train_df: pd.DataFrame,
+    n_similar_items: int = 50
+) -> pd.DataFrame:
+    """Adds Item-Based Collaborative Filtering features.
+    """
+    print("Adding Item-Based Collaborative Filtering features...")
+    
+    config.MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    ibcf_cache_path = config.MODEL_DIR / "ibcf_similarity.pkl"
+    
+    # Step 1: Load or compute item similarities
+    if ibcf_cache_path.exists():
+        print(f"Loading item similarity cache from {ibcf_cache_path}")
+        cache = joblib.load(ibcf_cache_path)
+        top_similar_items_dict = cache["top_similar_items"]
+        print(f"Loaded similarities for {len(top_similar_items_dict)} books")
+    else:
+        print("Computing item-item similarities...")
+        
+        # Only use has_read=1 ratings
+        rated_train = train_df[train_df[constants.COL_HAS_READ] == 1].copy()
+        
+        # Build item-user rating matrix (transposed from UBCF)
+        print("Building book-user matrix...")
+        book_user_matrix = rated_train.pivot_table(
+            index=constants.COL_BOOK_ID,
+            columns=constants.COL_USER_ID,
+            values=config.TARGET,
+            fill_value=0
+        )
+        print(f"Matrix shape: {book_user_matrix.shape}")
+        
+        # Compute cosine similarity between books
+        print("Computing item similarities...")
+        item_similarity = cosine_similarity(book_user_matrix.values)
+        item_similarity_df = pd.DataFrame(
+            item_similarity,
+            index=book_user_matrix.index,
+            columns=book_user_matrix.index
+        )
+        
+        # Store top-K similar items
+        print(f"Extracting top {n_similar_items} similar items...")
+        top_similar_items_dict = {}
+        for book_id in tqdm(item_similarity_df.index, desc="Processing books"):
+            item_sims = item_similarity_df.loc[book_id].sort_values(ascending=False)
+            item_sims = item_sims[item_sims.index != book_id]
+            top_similar_items_dict[book_id] = item_sims.head(n_similar_items).to_dict()
+        
+        print(f"Saving IBCF cache to {ibcf_cache_path}")
+        joblib.dump({"top_similar_items": top_similar_items_dict}, ibcf_cache_path)
+    
+    # Step 2: Prepare user rating lookup
+    print("Preparing user rating lookup...")
+    rated_train = train_df[train_df[constants.COL_HAS_READ] == 1].copy()
+    
+    # Create lookup: (user_id, book_id) -> rating
+    user_ratings_lookup = {}
+    for _, row in rated_train.iterrows():
+        key = (row[constants.COL_USER_ID], row[constants.COL_BOOK_ID])
+        user_ratings_lookup[key] = row[config.TARGET]
+    
+    # Step 3: Compute IBCF features
+    print(f"Computing IBCF features for {len(df)} rows...")
+    
+    ibcf_scores = []
+    ibcf_counts = []
+    
+    for _, row in tqdm(df.iterrows(), total=len(df), desc="IBCF features"):
         user_id = row[constants.COL_USER_ID]
         book_id = row[constants.COL_BOOK_ID]
         
         score = np.nan
         count = 0
         
-        # Get similar users
-        if user_id in top_similar_users_dict:
-            top_similar_users = top_similar_users_dict[user_id]
+        # Check if we have similar books for this book
+        if book_id in top_similar_items_dict:
+            similar_books = top_similar_items_dict[book_id]
             
-            # Get ratings from similar users for this book
-            if book_id in user_book_matrix.columns:
-                similar_ratings = []
-                similar_weights = []
+            ratings_list = []
+            
+            # Look for similar books this user has rated
+            for similar_book_id in similar_books.keys():
+                lookup_key = (user_id, similar_book_id)
                 
-                for similar_user_id, similarity in top_similar_users.items():
-                    if similar_user_id in user_book_matrix.index:
-                        rating = user_book_matrix.loc[similar_user_id, book_id]
-                        if rating > 0:  # Only consider users who rated this book
-                            similar_ratings.append(rating)
-                            similar_weights.append(similarity)
-                            count += 1
-                
-                if len(similar_ratings) > 0:
-                    # Weighted average rating from similar users
-                    # Check if weights sum to zero (shouldn't happen, but safety check)
-                    weights_sum = sum(similar_weights)
-                    if weights_sum > 0:
-                        score = np.average(similar_ratings, weights=similar_weights)
-                    else:
-                        # Fallback to simple average if weights sum to zero
-                        score = np.mean(similar_ratings)
+                if lookup_key in user_ratings_lookup:
+                    rating = user_ratings_lookup[lookup_key]
+                    ratings_list.append(rating)
+                    count += 1
+            
+            if ratings_list:
+                score = np.mean(ratings_list)
         
-        ubcf_scores.append(score)
-        ubcf_counts.append(count)
+        ibcf_scores.append(score)
+        ibcf_counts.append(count)
     
-    df["ubcf_score"] = ubcf_scores
-    df["ubcf_similar_users_count"] = ubcf_counts
+    df[constants.F_IBCF_SCORE] = ibcf_scores
+    df[constants.F_IBCF_COUNT] = ibcf_counts
     
-    print(f"Added UBCF features: ubcf_score, ubcf_similar_users_count")
+    print(f"IBCF features added:")
+    print(f"  - {constants.F_IBCF_SCORE}: avg rating from similar books")
+    print(f"  - {constants.F_IBCF_COUNT}: number of similar books user rated")
+    print(f"Coverage: {(~pd.Series(ibcf_scores).isna()).mean():.2%} of rows have IBCF scores")
+    
     return df
 
 
@@ -391,115 +540,185 @@ def add_bert_features(df: pd.DataFrame, _train_df: pd.DataFrame, descriptions_df
 
     embeddings_array = np.array(embeddings_list)
 
-    # Create DataFrame with BERT features
-    bert_feature_names = [f"bert_{i}" for i in range(config.BERT_EMBEDDING_DIM)]
-    bert_df = pd.DataFrame(embeddings_array, columns=bert_feature_names, index=df.index)
+    # Apply PCA to reduce dimensionality and prevent overfitting
+    pca_path = config.MODEL_DIR / constants.BERT_PCA_FILENAME
+    
+    if pca_path.exists():
+        print(f"Loading PCA model from {pca_path}")
+        pca = joblib.load(pca_path)
+        embeddings_reduced = pca.transform(embeddings_array)
+        print(f"Applied PCA: {config.BERT_EMBEDDING_DIM} -> {config.BERT_PCA_COMPONENTS} dimensions")
+    else:
+        print(f"Fitting PCA to reduce BERT embeddings from {config.BERT_EMBEDDING_DIM} to {config.BERT_PCA_COMPONENTS} dimensions...")
+        pca = PCA(n_components=config.BERT_PCA_COMPONENTS, random_state=config.RANDOM_STATE)
+        embeddings_reduced = pca.fit_transform(embeddings_array)
+        
+        # Save PCA model
+        joblib.dump(pca, pca_path)
+        print(f"Saved PCA model to {pca_path}")
+        print(f"PCA explained variance ratio: {pca.explained_variance_ratio_.sum():.4f}")
+
+    # Create DataFrame with reduced BERT features
+    bert_feature_names = [f"bert_{i}" for i in range(config.BERT_PCA_COMPONENTS)]
+    bert_df = pd.DataFrame(embeddings_reduced, columns=bert_feature_names, index=df.index)
 
     # Concatenate BERT features with main DataFrame
     df_with_bert = pd.concat([df.reset_index(drop=True), bert_df.reset_index(drop=True)], axis=1)
 
-    print(f"Added {len(bert_feature_names)} BERT features.")
+    print(f"Added {len(bert_feature_names)} BERT features (reduced from {config.BERT_EMBEDDING_DIM} via PCA).")
     return df_with_bert
 
 
-def handle_missing_values(df: pd.DataFrame, train_df: pd.DataFrame) -> pd.DataFrame:  # noqa: C901
+def handle_missing_values(df: pd.DataFrame, train_df: pd.DataFrame) -> pd.DataFrame:
     """Fills missing values using a defined strategy.
-
-    Fills missing values for age, aggregated features, and categorical features
-    to prepare the DataFrame for model training. Uses metrics from the training
-    set (e.g., global mean) to fill NaNs.
-
+    
     Args:
-        df (pd.DataFrame): The DataFrame with missing values.
-        train_df (pd.DataFrame): The training data, used for calculating fill metrics.
-
+        df: The DataFrame with missing values
+        train_df: The training data, used for calculating fill metrics
+    
     Returns:
-        pd.DataFrame: The DataFrame with missing values handled.
+        DataFrame with missing values handled
     """
     print("Handling missing values...")
-
-    # Calculate global mean from training data for filling
+    
+    # Calculate global mean from training data
     global_mean = train_df[config.TARGET].mean()
-
-    # Fill age with the median
-    age_median = df[constants.COL_AGE].median()
-    df[constants.COL_AGE] = df[constants.COL_AGE].fillna(age_median)
-
-    # Fill aggregate features for "cold start" users/items (only if they exist)
+    
+    # Fill age with median
+    if constants.COL_AGE in df.columns:
+        age_median = df[constants.COL_AGE].median()
+        df[constants.COL_AGE] = df[constants.COL_AGE].fillna(age_median)
+    
+    # Fill aggregate features (if they exist)
     if constants.F_USER_MEAN_RATING in df.columns:
         df[constants.F_USER_MEAN_RATING] = df[constants.F_USER_MEAN_RATING].fillna(global_mean)
     if constants.F_BOOK_MEAN_RATING in df.columns:
         df[constants.F_BOOK_MEAN_RATING] = df[constants.F_BOOK_MEAN_RATING].fillna(global_mean)
     if constants.F_AUTHOR_MEAN_RATING in df.columns:
         df[constants.F_AUTHOR_MEAN_RATING] = df[constants.F_AUTHOR_MEAN_RATING].fillna(global_mean)
-
+    
     if constants.F_USER_RATINGS_COUNT in df.columns:
         df[constants.F_USER_RATINGS_COUNT] = df[constants.F_USER_RATINGS_COUNT].fillna(0)
     if constants.F_BOOK_RATINGS_COUNT in df.columns:
         df[constants.F_BOOK_RATINGS_COUNT] = df[constants.F_BOOK_RATINGS_COUNT].fillna(0)
-
-    # Fill missing avg_rating from book_data with global mean
-    df[constants.COL_AVG_RATING] = df[constants.COL_AVG_RATING].fillna(global_mean)
-
-    # Fill genre counts with 0
-    df[constants.F_BOOK_GENRES_COUNT] = df[constants.F_BOOK_GENRES_COUNT].fillna(0)
-
-    # Fill TF-IDF features with 0 (for books without descriptions)
+    
+    # Fill avg_rating from book metadata
+    if constants.COL_AVG_RATING in df.columns:
+        df[constants.COL_AVG_RATING] = df[constants.COL_AVG_RATING].fillna(global_mean)
+    
+    # Fill genre counts
+    if constants.F_BOOK_GENRES_COUNT in df.columns:
+        df[constants.F_BOOK_GENRES_COUNT] = df[constants.F_BOOK_GENRES_COUNT].fillna(0)
+    
+    # NEW: Fill UBCF features
+    if constants.F_UBCF_SCORE in df.columns:
+        # Don't fill with global_mean - let the model learn that NaN means "no data"
+        # We'll fill with a special value that indicates cold start
+        df[constants.F_UBCF_SCORE] = df[constants.F_UBCF_SCORE].fillna(global_mean)
+    if constants.F_UBCF_COUNT in df.columns:
+        df[constants.F_UBCF_COUNT] = df[constants.F_UBCF_COUNT].fillna(0)
+    if constants.F_UBCF_STD in df.columns:
+        df[constants.F_UBCF_STD] = df[constants.F_UBCF_STD].fillna(0)
+    if constants.F_UBCF_MAX_SIM in df.columns:
+        df[constants.F_UBCF_MAX_SIM] = df[constants.F_UBCF_MAX_SIM].fillna(0)
+    
+    # NEW: Fill IBCF features
+    if constants.F_IBCF_SCORE in df.columns:
+        df[constants.F_IBCF_SCORE] = df[constants.F_IBCF_SCORE].fillna(global_mean)
+    if constants.F_IBCF_COUNT in df.columns:
+        df[constants.F_IBCF_COUNT] = df[constants.F_IBCF_COUNT].fillna(0)
+    
+    # Fill TF-IDF features (if they exist)
     tfidf_cols = [col for col in df.columns if col.startswith("tfidf_")]
     for col in tfidf_cols:
         df[col] = df[col].fillna(0.0)
-
-    # Fill BERT features with 0 (for books without descriptions)
+    
+    # Fill BERT features
     bert_cols = [col for col in df.columns if col.startswith("bert_")]
     for col in bert_cols:
         df[col] = df[col].fillna(0.0)
-
-    # Fill remaining categorical features with a special value
+    
+    # Fill categorical features
     for col in config.CAT_FEATURES:
         if col in df.columns:
             if df[col].dtype.name in ("category", "object") and df[col].isna().any():
                 df[col] = df[col].astype(str).fillna(constants.MISSING_CAT_VALUE).astype("category")
             elif pd.api.types.is_numeric_dtype(df[col].dtype) and df[col].isna().any():
                 df[col] = df[col].fillna(constants.MISSING_NUM_VALUE)
-
+    
+    print("Missing values handled")
     return df
 
 
 def create_features(
-    df: pd.DataFrame, book_genres_df: pd.DataFrame, descriptions_df: pd.DataFrame, include_aggregates: bool = False
+    df: pd.DataFrame, 
+    book_genres_df: pd.DataFrame, 
+    descriptions_df: pd.DataFrame, 
+    include_aggregates: bool = False,
+    use_ubcf: bool = True,
+    use_ibcf: bool = True,
+    use_tfidf: bool = False,
+    use_bert: bool = True
 ) -> pd.DataFrame:
     """Runs the full feature engineering pipeline.
-
-    This function orchestrates the calls to add aggregate features (optional), genre
-    features, text features (TF-IDF and BERT), and handle missing values.
-
+    
     Args:
-        df (pd.DataFrame): The merged DataFrame from `data_processing`.
-        book_genres_df (pd.DataFrame): DataFrame mapping books to genres.
-        descriptions_df (pd.DataFrame): DataFrame with book descriptions.
-        include_aggregates (bool): If True, compute aggregate features. Defaults to False.
-            Aggregates are typically computed separately during training to avoid data leakage.
-
+        df: The merged DataFrame from data_processing
+        book_genres_df: DataFrame mapping books to genres
+        descriptions_df: DataFrame with book descriptions
+        include_aggregates: If True, compute aggregate features
+        use_ubcf: If True, add UBCF features (recommended)
+        use_ibcf: If True, add IBCF features (recommended)
+        use_tfidf: If True, add TF-IDF features (may cause overfitting)
+        use_bert: If True, add BERT features (recommended)
+    
     Returns:
-        pd.DataFrame: The final DataFrame with all features engineered.
+        Final DataFrame with all features engineered
     """
     print("Starting feature engineering pipeline...")
+    print(f"Configuration: aggregates={include_aggregates}, ubcf={use_ubcf}, "
+          f"ibcf={use_ibcf}, tfidf={use_tfidf}, bert={use_bert}")
+    
     train_df = df[df[constants.COL_SOURCE] == constants.VAL_SOURCE_TRAIN].copy()
-
-    # Aggregate features are computed separately during training to ensure
-    # no data leakage from validation set timestamps
+    
+    # Aggregate features (if enabled)
     if include_aggregates:
         df = add_aggregate_features(df, train_df)
-
+    
+    # Genre features
     df = add_genre_features(df, book_genres_df)
-    df = add_ubcf_features(df, train_df, n_similar_users=50)
-    # df = add_text_features(df, train_df, descriptions_df)  # Отключено: вызывает переобучение
-    df = add_bert_features(df, train_df, descriptions_df)
-    df = handle_missing_values(df, train_df)
+    
+    # Collaborative filtering features
+    if use_ubcf:
+        df = add_ubcf_features(
+            df, 
+            train_df, 
+            n_similar_users=30,  # Can tune this
+            use_timestamp_filtering=True  # Prevent leakage
+        )
+    
+    if use_ibcf:
+        df = add_ibcf_features(
+            df,
+            train_df,
+            n_similar_items=50  # Can tune this
+        )
 
+    if use_tfidf:
+        print("WARNING: TF-IDF may cause overfitting. Consider using BERT only.")
+        df = add_text_features(df, train_df, descriptions_df)
+    
+    if use_bert:
+        df = add_bert_features(df, train_df, descriptions_df)
+    
+    df = handle_missing_values(df, train_df)
+    
+    # Ensure categorical features
     for col in config.CAT_FEATURES:
         if col in df.columns:
             df[col] = df[col].astype("category")
-
+    
     print("Feature engineering complete.")
+    print(f"Final shape: {df.shape}")
+    
     return df

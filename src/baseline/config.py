@@ -34,8 +34,8 @@ TEMPORAL_SPLIT_RATIO = 0.8
 
 # --- TRAINING CONFIG ---
 EARLY_STOPPING_ROUNDS = 50
-MODEL_FILENAME_PATTERN = "catboost_fold_{fold}.cbm"  
-MODEL_FILENAME = "catboost_model.cbm" 
+MODEL_FILENAME_PATTERN = "catboost_fold_{fold}.cbm"
+MODEL_FILENAME = "catboost_model.cbm"
 
 # --- TF-IDF PARAMETERS ---
 TFIDF_MAX_FEATURES = 500
@@ -48,6 +48,7 @@ BERT_MODEL_NAME = constants.BERT_MODEL_NAME
 BERT_BATCH_SIZE = 8
 BERT_MAX_LENGTH = 512
 BERT_EMBEDDING_DIM = 768
+BERT_PCA_COMPONENTS = 50  # Уменьшаем размерность BERT эмбеддингов через PCA для уменьшения переобучения
 BERT_DEVICE = "cuda" if torch and torch.cuda.is_available() else "cpu"
 # Limit GPU memory usage to 50% to prevent overheating and OOM errors
 BERT_GPU_MEMORY_FRACTION = 0.75
@@ -71,16 +72,17 @@ CAT_FEATURES = [
 # --- MODEL PARAMETERS ---
 
 CATBOOST_PARAMS = {
-    "loss_function": "RMSE",
-    "eval_metric": "RMSE",
-    "iterations": 1000, 
+    'loss_function': 'MAE',
+    'eval_metric': 'MAE',
+    'custom_metric': ['RMSE', 'MAE'],
+    "iterations": 1000,
     "learning_rate": 0.03,
     "depth": 4,
-    "l2_leaf_reg": 50, 
+    "l2_leaf_reg": 50,
     "max_leaves": 32,
     "min_data_in_leaf": 300,
     "subsample": 0.7,
-    "rsm": 0.8,  
+    "rsm": 0.8,
     "bootstrap_type": "Bernoulli",
     "grow_policy": "Lossguide",
     "random_seed": RANDOM_STATE,
