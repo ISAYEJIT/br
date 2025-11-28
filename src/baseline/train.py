@@ -80,9 +80,11 @@ def train() -> None:
     print("Temporal split validation passed: all validation timestamps are after train timestamps")
 
     # Compute aggregate features on train split only (to prevent data leakage)
-    print("\nComputing aggregate features on train split only...")
+    #print("\nComputing aggregate features on train split only...")
     train_split_with_agg = add_aggregate_features(train_split.copy(), train_split)
     val_split_with_agg = add_aggregate_features(val_split.copy(), train_split)  # Use train_split for aggregates!
+    #train_split_with_agg = train_split.copy()
+    #val_split_with_agg = val_split.copy()
 
     # Handle missing values (use train_split for fill values)
     print("Handling missing values...")
@@ -96,8 +98,8 @@ def train() -> None:
         config.TARGET,
         constants.COL_PREDICTION,
         constants.COL_TIMESTAMP,
-        constants.COL_USER_ID, 
-        constants.COL_BOOK_ID, 
+        constants.COL_USER_ID,
+        constants.COL_BOOK_ID,
     ]
     features = [col for col in train_split_final.columns if col not in exclude_cols]
 
@@ -122,11 +124,11 @@ def train() -> None:
     config.MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
     print("\nTraining CatBoost model...")
-    
+
     # included pbar
     model_params = config.CATBOOST_PARAMS.copy()
     model_params["verbose"] = 10  # pbar every 10 iterations
-    
+
     model = CatBoostRegressor(**model_params)
 
     cat_features_indices = [
