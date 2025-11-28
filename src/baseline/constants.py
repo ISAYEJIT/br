@@ -16,6 +16,7 @@ BOOK_DESCRIPTIONS_FILENAME = "book_descriptions.csv"
 SUBMISSION_FILENAME = "submission.csv"
 TFIDF_VECTORIZER_FILENAME = "tfidf_vectorizer.pkl"
 BERT_EMBEDDINGS_FILENAME = "bert_embeddings.pkl"
+UBCF_CACHE_FILENAME = "ubcf_cache.pkl"
 BERT_MODEL_NAME = "DeepPavlov/rubert-base-cased"
 PROCESSED_DATA_FILENAME = "processed_features.parquet"
 
