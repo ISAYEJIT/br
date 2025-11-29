@@ -366,8 +366,8 @@ def create_features(
 
     # Aggregate features are computed separately during training to ensure
     # no data leakage from validation set timestamps
-    if include_aggregates:
-        df = add_aggregate_features(df, train_df)
+    #if include_aggregates:
+        #df = add_aggregate_features(df, train_df)
 
     df = add_genre_features(df, book_genres_df)
     df = add_text_features(df, train_df, descriptions_df)

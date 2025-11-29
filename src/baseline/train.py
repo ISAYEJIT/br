@@ -96,8 +96,8 @@ def train() -> None:
         config.TARGET,
         constants.COL_PREDICTION,
         constants.COL_TIMESTAMP,
-        constants.COL_USER_ID, 
-        constants.COL_BOOK_ID, 
+        constants.COL_USER_ID,
+        constants.COL_BOOK_ID,
     ]
     features = [col for col in train_split_final.columns if col not in exclude_cols]
 
@@ -122,11 +122,11 @@ def train() -> None:
     config.MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
     print("\nTraining CatBoost model...")
-    
+
     # included pbar
     model_params = config.CATBOOST_PARAMS.copy()
     model_params["verbose"] = 10  # pbar every 10 iterations
-    
+
     model = CatBoostRegressor(**model_params)
 
     cat_features_indices = [
