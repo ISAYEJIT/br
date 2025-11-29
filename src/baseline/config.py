@@ -3,6 +3,7 @@ Configuration file for the NTO ML competition baseline.
 """
 
 from pathlib import Path
+import numpy as np
 
 try:
     import torch
@@ -68,12 +69,31 @@ CAT_FEATURES = [
     constants.COL_PUBLISHER,
 ]
 
+
+class ServerMetric:
+    def get_final_error(self, error, weight):
+        return error
+
+    def is_max_optimal(self):
+        return True
+
+    def evaluate(self, approxes, target, weight):
+        y_true = np.array(target)
+        y_pred = np.array(approxes[0])
+
+        rmse = np.sqrt(np.mean((y_true - y_pred) ** 2))
+        mae = np.mean(np.abs(y_true - y_pred))
+        score = 1 - (0.5 * rmse / 10 + 0.5 * mae / 10)
+
+        return score, 1
+
+
 # --- MODEL PARAMETERS ---
 
 CATBOOST_PARAMS = {
-    "loss_function": "MAE",
-    "eval_metric": "MAE",
-    "custom_metric": ['RMSE', 'MAE'],
+    'loss_function': 'MAE',
+    'eval_metric': ServerMetric(),
+    'custom_metric': ['RMSE', 'MAE'],
     "iterations": 1000,
     "learning_rate": 0.03,
     "depth": 4,
@@ -89,7 +109,6 @@ CATBOOST_PARAMS = {
     "thread_count": -1,
     "early_stopping_rounds": EARLY_STOPPING_ROUNDS,
 }
-
 CATBOOST_FIT_PARAMS = {
     "use_best_model": True,
 }
