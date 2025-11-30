@@ -52,13 +52,14 @@ def predict() -> None:
     test_set_final = handle_missing_values(test_set_with_agg, train_set)
 
     # Define features (exclude source, target, prediction, timestamp columns) user_id book_id
+    # ВАЖНО: Исключаем user_id и book_id - они вызывают пе
     exclude_cols = [
         constants.COL_SOURCE,
         config.TARGET,
         constants.COL_PREDICTION,
         constants.COL_TIMESTAMP,
-        constants.COL_USER_ID,  
-        constants.COL_BOOK_ID,  
+        constants.COL_USER_ID,  # Исключаем: вызывает переобучение
+        constants.COL_BOOK_ID,  # Исключаем: вызывает переобучение
     ]
     features = [col for col in test_set_final.columns if col not in exclude_cols]
 

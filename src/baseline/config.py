@@ -60,8 +60,8 @@ BERT_GPU_MEMORY_FRACTION = 0.75
 # Они вызывают сильное переобучение, так как модель запоминает конкретные ID.
 # Используем только агрегатные признаки (user_mean_rating, book_mean_rating).
 CAT_FEATURES = [
-    # constants.COL_USER_ID,  # УБРАНО: вызывает переобучение
-    # constants.COL_BOOK_ID,  # УБРАНО: вызывает переобучение
+    constants.COL_USER_ID,
+    constants.COL_BOOK_ID,
     constants.COL_GENDER,
     constants.COL_AGE,
     constants.COL_AUTHOR_ID,
