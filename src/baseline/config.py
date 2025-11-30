@@ -3,6 +3,7 @@ Configuration file for the NTO ML competition baseline.
 """
 
 from pathlib import Path
+import numpy as np
 
 try:
     import torch
@@ -48,6 +49,7 @@ BERT_MODEL_NAME = constants.BERT_MODEL_NAME
 BERT_BATCH_SIZE = 8
 BERT_MAX_LENGTH = 512
 BERT_EMBEDDING_DIM = 768
+BERT_PCA_COMPONENTS = 50  # Уменьшаем размерность BERT эмбеддингов через PCA для уменьшения переобучения
 BERT_DEVICE = "cuda" if torch and torch.cuda.is_available() else "cpu"
 # Limit GPU memory usage to 50% to prevent overheating and OOM errors
 BERT_GPU_MEMORY_FRACTION = 0.75
@@ -58,8 +60,8 @@ BERT_GPU_MEMORY_FRACTION = 0.75
 # Они вызывают сильное переобучение, так как модель запоминает конкретные ID.
 # Используем только агрегатные признаки (user_mean_rating, book_mean_rating).
 CAT_FEATURES = [
-    constants.COL_USER_ID,
-    constants.COL_BOOK_ID,
+    constants.COL_USER_ID,  # УБРАНО: вызывает переобучение
+    constants.COL_BOOK_ID,  # УБРАНО: вызывает переобучение
     constants.COL_GENDER,
     constants.COL_AGE,
     constants.COL_AUTHOR_ID,
@@ -68,11 +70,31 @@ CAT_FEATURES = [
     constants.COL_PUBLISHER,
 ]
 
+
+class ServerMetric:
+    def get_final_error(self, error, weight):
+        return error
+
+    def is_max_optimal(self):
+        return True
+
+    def evaluate(self, approxes, target, weight):
+        y_true = np.array(target)
+        y_pred = np.array(approxes[0])
+
+        rmse = np.sqrt(np.mean((y_true - y_pred) ** 2))
+        mae = np.mean(np.abs(y_true - y_pred))
+        score = 1 - (0.5 * rmse / 10 + 0.5 * mae / 10)
+
+        return score, 1
+
+
 # --- MODEL PARAMETERS ---
 
 CATBOOST_PARAMS = {
-    "loss_function": "RMSE",
-    "eval_metric": "RMSE",
+    'loss_function': 'MAE',
+    'eval_metric': ServerMetric(),
+    'custom_metric': ['RMSE', 'MAE'],
     "iterations": 1000,
     "learning_rate": 0.03,
     "depth": 4,
