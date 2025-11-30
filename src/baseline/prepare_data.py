@@ -16,7 +16,7 @@ def prepare_data() -> None:
     This function:
     1. Loads raw data from data/raw/
     2. Filters training data (only has_read=1)
-    3. Applies feature engineering (genres, TF-IDF, BERT) - NO aggregates to avoid data leakage
+    3. Applies feature engineering (genres, TF-IDF, Nomic) - NO aggregates to avoid data leakage
     4. Saves processed data to data/processed/processed_features.parquet
     5. Preserves timestamp for temporal splitting
 
