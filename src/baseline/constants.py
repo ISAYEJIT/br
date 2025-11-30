@@ -48,6 +48,8 @@ F_UBCF_MAX_SIM = "ubcf_max_similarity"
 # --- IBCF feature names ---
 F_IBCF_SCORE = "ibcf_score"
 F_IBCF_COUNT = "ibcf_similar_books_count"
+F_IBCF_STD = "ibcf_rating_std"
+F_IBCF_MAX_SIM = "ibcf_max_similarity"
 
 # Metadata columns from raw data
 COL_GENDER = "gender"
@@ -70,3 +72,4 @@ MISSING_CAT_VALUE = "-1"
 MISSING_NUM_VALUE = -1
 PREDICTION_MIN_VALUE = 0
 PREDICTION_MAX_VALUE = 10
+

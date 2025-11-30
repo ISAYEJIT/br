@@ -80,8 +80,8 @@ def add_genre_features(df: pd.DataFrame, book_genres_df: pd.DataFrame) -> pd.Dat
 def add_ubcf_features(
     df: pd.DataFrame,
     train_df: pd.DataFrame,
-    n_similar_users: int = 30,
-    use_timestamp_filtering: bool = True
+    n_similar_users,
+    use_timestamp_filtering: bool = False,
 ) -> pd.DataFrame:
     """Adds User-Based Collaborative Filtering features.
     """
@@ -240,7 +240,8 @@ def add_ubcf_features(
 def add_ibcf_features(
     df: pd.DataFrame,
     train_df: pd.DataFrame,
-    n_similar_items: int = 50
+    n_similar_items,
+    use_timestamp_filtering: bool = True,
 ) -> pd.DataFrame:
     """Adds Item-Based Collaborative Filtering features.
     """
@@ -291,56 +292,94 @@ def add_ibcf_features(
         print(f"Saving IBCF cache to {ibcf_cache_path}")
         joblib.dump({"top_similar_items": top_similar_items_dict}, ibcf_cache_path)
 
-    # Step 2: Prepare user rating lookup
+    # Step 2: Prepare user rating lookup with timestamps
     print("Preparing user rating lookup...")
     rated_train = train_df[train_df[constants.COL_HAS_READ] == 1].copy()
 
-    # Create lookup: (user_id, book_id) -> rating
+    if use_timestamp_filtering and constants.COL_TIMESTAMP in rated_train.columns:
+        # Convert timestamp to datetime for filtering
+        rated_train[constants.COL_TIMESTAMP] = pd.to_datetime(rated_train[constants.COL_TIMESTAMP])
+        has_timestamps = True
+        print("Temporal filtering enabled - will use only past ratings")
+    else:
+        has_timestamps = False
+        print("Temporal filtering disabled - using all training ratings")
+
+    # Create efficient lookup: (user_id, book_id) -> rating and timestamp
     user_ratings_lookup = {}
+    timestamp_lookup = {}
+
     for _, row in rated_train.iterrows():
         key = (row[constants.COL_USER_ID], row[constants.COL_BOOK_ID])
         user_ratings_lookup[key] = row[config.TARGET]
+        if has_timestamps:
+            timestamp_lookup[key] = row[constants.COL_TIMESTAMP]
 
-    # Step 3: Compute IBCF features
+    # Step 3: Compute IBCF features with temporal filtering
     print(f"Computing IBCF features for {len(df)} rows...")
+
+    # Convert df timestamps if needed
+    if has_timestamps and constants.COL_TIMESTAMP in df.columns:
+        df_timestamps = pd.to_datetime(df[constants.COL_TIMESTAMP])
+    else:
+        df_timestamps = [None] * len(df)
 
     ibcf_scores = []
     ibcf_counts = []
+    ibcf_stds = []  # NEW: standard deviation of similar items' ratings
+    ibcf_max_sim = []  # NEW: max similarity score among items user rated
 
-    for _, row in tqdm(df.iterrows(), total=len(df), desc="IBCF features"):
+    for idx, (_, row) in enumerate(tqdm(df.iterrows(), total=len(df), desc="IBCF features")):
         user_id = row[constants.COL_USER_ID]
         book_id = row[constants.COL_BOOK_ID]
+        current_timestamp = df_timestamps[idx]
 
         score = np.nan
         count = 0
+        ratings_list = []
+        max_similarity = 0.0
 
         # Check if we have similar books for this book
         if book_id in top_similar_items_dict:
             similar_books = top_similar_items_dict[book_id]
 
-            ratings_list = []
-
             # Look for similar books this user has rated
-            for similar_book_id in similar_books.keys():
+            for similar_book_id, similarity_score in similar_books.items():
                 lookup_key = (user_id, similar_book_id)
 
+                # Check if user rated this similar book
                 if lookup_key in user_ratings_lookup:
                     rating = user_ratings_lookup[lookup_key]
+
+                    # Temporal filtering: only use past ratings
+                    if has_timestamps and current_timestamp is not None:
+                        rating_timestamp = timestamp_lookup.get(lookup_key)
+                        if rating_timestamp is not None and rating_timestamp >= current_timestamp:
+                            continue  # Skip future ratings
+
                     ratings_list.append(rating)
                     count += 1
+                    max_similarity = max(max_similarity, similarity_score)
 
+            # Compute average if we have ratings
             if ratings_list:
                 score = np.mean(ratings_list)
 
+        # Compute standard deviation (measure of agreement)
+        std = np.std(ratings_list) if len(ratings_list) > 1 else 0.0
+
         ibcf_scores.append(score)
         ibcf_counts.append(count)
+        ibcf_stds.append(std)
+        ibcf_max_sim.append(max_similarity if count > 0 else 0.0)
 
+    # Add features to dataframe
     df[constants.F_IBCF_SCORE] = ibcf_scores
     df[constants.F_IBCF_COUNT] = ibcf_counts
+    df[constants.F_IBCF_STD] = ibcf_stds
+    df[constants.F_IBCF_MAX_SIM] = ibcf_max_sim
 
     print(f"IBCF features added:")
-    print(f"  - {constants.F_IBCF_SCORE}: avg rating from similar books")
-    print(f"  - {constants.F_IBCF_COUNT}: number of similar books user rated")
     print(f"Coverage: {(~pd.Series(ibcf_scores).isna()).mean():.2%} of rows have IBCF scores")
 
     return df
@@ -658,7 +697,7 @@ def create_features(
     use_ubcf: bool = True,
     use_ibcf: bool = True,
     use_tfidf: bool = False,
-    use_bert: bool = True
+    use_bert: bool = True,
 ) -> pd.DataFrame:
     """Runs the full feature engineering pipeline.
 
@@ -693,15 +732,16 @@ def create_features(
         df = add_ubcf_features(
             df,
             train_df,
-            n_similar_users=30,  # Can tune this
-            use_timestamp_filtering=True  # Prevent leakage
+            n_similar_users=100,
+            use_timestamp_filtering=True
         )
 
     if use_ibcf:
         df = add_ibcf_features(
             df,
             train_df,
-            n_similar_items=50  # Can tune this
+            n_similar_items=100,
+            use_timestamp_filtering=True
         )
 
     if use_tfidf:
