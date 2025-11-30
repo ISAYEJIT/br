@@ -58,8 +58,8 @@ def predict() -> None:
         config.TARGET,
         constants.COL_PREDICTION,
         constants.COL_TIMESTAMP,
-        constants.COL_USER_ID,
-        constants.COL_BOOK_ID,
+        #constants.COL_USER_ID,
+        #constants.COL_BOOK_ID,
     ]
     features = [col for col in test_set_final.columns if col not in exclude_cols]
 
