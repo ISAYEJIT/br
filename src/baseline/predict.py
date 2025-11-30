@@ -5,7 +5,7 @@ Computes aggregate features on all train data and applies them to test set,
 then generates predictions using the trained model.
 """
 
-import lightgbm as lgb
+from catboost import CatBoostRegressor
 import numpy as np
 import pandas as pd
 
@@ -75,11 +75,19 @@ def predict() -> None:
         )
 
     print(f"\nLoading model from {model_path}...")
-    model = lgb.Booster(model_file=str(model_path))
+    model = CatBoostRegressor()
+    model.load_model(str(model_path))
+
+    # Convert categorical features to strings for CatBoost (same as in training)
+    X_test_cat = X_test.copy()
+    for col in features:
+        if col in config.CAT_FEATURES:
+            # Convert to string to handle any numeric values properly
+            X_test_cat[col] = X_test_cat[col].astype(str)
 
     # Generate predictions
     print("Generating predictions...")
-    test_preds = model.predict(X_test)
+    test_preds = model.predict(X_test_cat)
 
     # Clip predictions to be within the valid rating range [0, 10]
     clipped_preds = np.clip(test_preds, constants.PREDICTION_MIN_VALUE, constants.PREDICTION_MAX_VALUE)

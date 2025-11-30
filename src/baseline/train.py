@@ -1,14 +1,15 @@
 """
-Main training script for the LightGBM model.
+Main training script for the CatBoost model.
 
 Uses temporal split with absolute date threshold to ensure methodologically
 correct validation without data leakage from future timestamps.
 """
 
-import lightgbm as lgb
+from catboost import CatBoostRegressor
 import numpy as np
 import pandas as pd
 from sklearn.metrics import mean_absolute_error, mean_squared_error
+import traitlets
 
 from . import config, constants
 from .features import add_aggregate_features, handle_missing_values
@@ -20,7 +21,7 @@ def train() -> None:
 
     Loads prepared data from data/processed/, performs temporal split based on
     absolute date threshold, computes aggregate features on train split only,
-    and trains a single LightGBM model. This ensures methodologically correct
+    and trains a single CatBoost model. This ensures methodologically correct
     validation without data leakage from future timestamps.
 
     Note: Data must be prepared first using prepare_data.py
@@ -114,30 +115,43 @@ def train() -> None:
     config.MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
     # Train single model
-    print("\nTraining LightGBM model...")
-    model = lgb.LGBMRegressor(**config.LGB_PARAMS)
+    print("\nTraining CatBoost model...")
 
-    # Update fit params with early stopping callback
-    fit_params = config.LGB_FIT_PARAMS.copy()
-    fit_params["callbacks"] = [lgb.early_stopping(stopping_rounds=config.EARLY_STOPPING_ROUNDS, verbose=False)]
+    # Convert categorical features to strings for CatBoost
+    # CatBoost requires categorical features to be strings or integers, not floats
+    X_train_cat = X_train.copy()
+    X_val_cat = X_val.copy()
+
+    for col in features:
+        if col in config.CAT_FEATURES:
+            # Convert to string to handle any numeric values properly
+            X_train_cat[col] = X_train_cat[col].astype(str)
+            X_val_cat[col] = X_val_cat[col].astype(str)
+
+    # Identify categorical feature indices
+    cat_feature_indices = [i for i, col in enumerate(features) if col in config.CAT_FEATURES]
+
+    model = CatBoostRegressor(**config.CATBOOST_PARAMS)
+
 
     model.fit(
-        X_train,
+        X_train_cat,
         y_train,
-        eval_set=[(X_val, y_val)],
-        eval_metric=fit_params["eval_metric"],
-        callbacks=fit_params["callbacks"],
+        eval_set=(X_val_cat, y_val),
+        cat_features=cat_feature_indices,
+        verbose=True,
+        plot=False,
     )
 
     # Evaluate the model
-    val_preds = model.predict(X_val)
+    val_preds = model.predict(X_val_cat)
     rmse = np.sqrt(mean_squared_error(y_val, val_preds))
     mae = mean_absolute_error(y_val, val_preds)
     print(f"\nValidation RMSE: {rmse:.4f}, MAE: {mae:.4f}")
 
     # Save the trained model
     model_path = config.MODEL_DIR / config.MODEL_FILENAME
-    model.booster_.save_model(str(model_path))
+    model.save_model(str(model_path))
     print(f"Model saved to {model_path}")
 
     print("\nTraining complete.")
