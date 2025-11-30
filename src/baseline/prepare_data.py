@@ -33,8 +33,6 @@ def prepare_data() -> None:
     # Load and merge raw data
     merged_df, book_genres_df, _, descriptions_df = load_and_merge_data()
 
-    # Apply feature engineering WITHOUT aggregates
-    # Aggregates will be computed during training on train split only
     featured_df = create_features(merged_df, book_genres_df, descriptions_df, include_aggregates=True)
 
     # Ensure processed directory exists
