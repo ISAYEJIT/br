@@ -24,7 +24,7 @@ SUBMISSION_DIR = OUTPUT_DIR / "submissions"
 
 # --- PARAMETERS ---
 N_SPLITS = 5  # Deprecated: kept for backwards compatibility, not used in temporal split
-RANDOM_STATE = 42
+RANDOM_STATE = 6446
 TARGET = constants.COL_TARGET  # Alias for consistency
 # --- TEMPORAL SPLIT CONFIG ---
 # Ratio of data to use for training (0 < TEMPORAL_SPLIT_RATIO < 1)
