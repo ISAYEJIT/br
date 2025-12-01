@@ -83,9 +83,8 @@ def train() -> None:
     # Compute aggregate features on train split only (to prevent data leakage)
     print("\nComputing aggregate features on train split only...")
     train_split_with_agg = add_aggregate_features(train_split.copy(), train_split)
-    val_split_with_agg = add_aggregate_features(val_split.copy(), train_split)  # Use train_split for aggregates!
+    val_split_with_agg = add_aggregate_features(val_split.copy(), train_split)
 
-    # Handle missing values (use train_split for fill values)
     print("Handling missing values...")
     train_split_final = handle_missing_values(train_split_with_agg, train_split)
     val_split_final = handle_missing_values(val_split_with_agg, train_split)
