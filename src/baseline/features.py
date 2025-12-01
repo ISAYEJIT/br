@@ -18,16 +18,16 @@ from . import config, constants
 
 def add_aggregate_features(df: pd.DataFrame, train_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Безопасные агрегатные фичи без leakage.
-    Использует только существующие константы.
+    Безопасные агрегатные фичи без leakage + ВСЕ улучшения
     """
-    print("Adding safe aggregate features...")
+    print("Adding enhanced aggregate features...")
 
     train_read = train_df[train_df[constants.COL_HAS_READ] == 1].copy()
 
     global_mean = train_read[config.TARGET].mean()
     global_std = train_read[config.TARGET].std()
 
+    # ========== БАЗОВЫЕ АГРЕГАТЫ ==========
     user_agg = train_read.groupby(constants.COL_USER_ID)[config.TARGET].agg(['mean', 'count']).reset_index()
     user_agg.columns = [
         constants.COL_USER_ID,
@@ -42,25 +42,68 @@ def add_aggregate_features(df: pd.DataFrame, train_df: pd.DataFrame) -> pd.DataF
         constants.F_BOOK_RATINGS_COUNT
     ]
 
+    # ========== УЛУЧШЕНИЕ 1: SMOOTHED AGGREGATES ==========
+    print("  Adding smoothed aggregates...")
+
+    # Smoothed user mean (Bayesian average)
+    user_smoothing_factor = 5
+    user_agg[constants.F_USER_SMOOTHED_MEAN] = (
+        (user_agg[constants.F_USER_MEAN_RATING] * user_agg[constants.F_USER_RATINGS_COUNT] +
+         global_mean * user_smoothing_factor) /
+        (user_agg[constants.F_USER_RATINGS_COUNT] + user_smoothing_factor)
+    )
+
+    # Smoothed book mean
+    book_smoothing_factor = 10
+    book_agg[constants.F_BOOK_SMOOTHED_MEAN] = (
+        (book_agg[constants.F_BOOK_MEAN_RATING] * book_agg[constants.F_BOOK_RATINGS_COUNT] +
+         global_mean * book_smoothing_factor) /
+        (book_agg[constants.F_BOOK_RATINGS_COUNT] + book_smoothing_factor)
+    )
+
+    # ========== УЛУЧШЕНИЕ 2: PERCENTILE RANKS ==========
+    print("  Adding percentile ranks...")
+
+    # User rating percentile
+    user_agg['user_rating_percentile'] = user_agg[constants.F_USER_MEAN_RATING].rank(pct=True)
+
+    # Book rating percentile
+    book_agg['book_rating_percentile'] = book_agg[constants.F_BOOK_MEAN_RATING].rank(pct=True)
+
+    # Popularity percentiles
+    user_agg['user_popularity_percentile'] = user_agg[constants.F_USER_RATINGS_COUNT].rank(pct=True)
+    book_agg['book_popularity_percentile'] = book_agg[constants.F_BOOK_RATINGS_COUNT].rank(pct=True)
+
+    # ========== МЕРЖИМ БАЗОВЫЕ ФИЧИ ==========
+    df = df.merge(user_agg, on=constants.COL_USER_ID, how='left')
+    print(f"  Merged user aggregates: {len(user_agg)} users")
+
+    df = df.merge(book_agg, on=constants.COL_BOOK_ID, how='left')
+    print(f"  Merged book aggregates: {len(book_agg)} books")
+
+    # ========== AUTHOR AGGREGATES (исправленная версия) ==========
     author_agg = None
-    books_df = None
+    try:
+        possible_paths = [
+            config.DATA_DIR / "raw" / constants.BOOK_DATA_FILENAME,
+            config.DATA_DIR / constants.BOOK_DATA_FILENAME,
+            Path("D:\\br\\data\\raw\\books.csv"),
+        ]
 
-    possible_paths = [
-        config.DATA_DIR / "raw" / constants.BOOK_DATA_FILENAME,
-        config.DATA_DIR / constants.BOOK_DATA_FILENAME,
-        Path("D:\\br\\data\\raw\\books.csv"),
-    ]
+        books_path = None
+        for path in possible_paths:
+            if path.exists():
+                books_path = path
+                break
 
-    books_path = None
-    for path in possible_paths:
-        if path.exists():
-            books_path = path
-            break
-
-    if books_path:
-        try:
+        if books_path:
             books_df = pd.read_csv(books_path)
-            print(f"Loaded books data from {books_path}")
+            print(f"  Loaded books data from {books_path}")
+
+            # Проверяем, есть ли author_id в данных
+            if 'author_id' in books_df.columns:
+                # Переименовываем для консистентности
+                books_df = books_df.rename(columns={'author_id': constants.COL_AUTHOR_ID})
 
             if constants.COL_AUTHOR_ID in books_df.columns:
                 train_with_author = train_read.merge(
@@ -72,65 +115,130 @@ def add_aggregate_features(df: pd.DataFrame, train_df: pd.DataFrame) -> pd.DataF
 
                 if not train_with_author.empty:
                     author_agg = train_with_author.groupby(constants.COL_AUTHOR_ID)[config.TARGET].agg(
-                        ['mean']).reset_index()
-                    author_agg.columns = [constants.COL_AUTHOR_ID, constants.F_AUTHOR_MEAN_RATING]
-                    print(f"Computed aggregates for {len(author_agg)} authors")
-        except Exception as e:
-            print(f"Error loading books data: {e}")
-    else:
-        print(f"Books file not found. Tried paths: {possible_paths}")
-        print(f"Current DATA_DIR: {config.DATA_DIR}")
-        print(f"DATA_DIR exists: {config.DATA_DIR.exists()}")
+                        ['mean', 'count']).reset_index()
+                    author_agg.columns = [
+                        constants.COL_AUTHOR_ID,
+                        constants.F_AUTHOR_MEAN_RATING,
+                        constants.F_AUTHOR_RATINGS_COUNT
+                    ]
 
-    df = df.merge(user_agg, on=constants.COL_USER_ID, how='left')
-    print(f"  Merged user aggregates: {len(user_agg)} users")
-    df = df.merge(book_agg, on=constants.COL_BOOK_ID, how='left')
-    print(f"  Merged book aggregates: {len(book_agg)} books")
+                    # Smoothed author mean
+                    author_smoothing_factor = 15
+                    author_agg[constants.F_AUTHOR_SMOOTHED_MEAN] = (
+                        (author_agg[constants.F_AUTHOR_MEAN_RATING] * author_agg[constants.F_AUTHOR_RATINGS_COUNT] +
+                         global_mean * author_smoothing_factor) /
+                        (author_agg[constants.F_AUTHOR_RATINGS_COUNT] + author_smoothing_factor)
+                    )
 
-    if author_agg is not None and not author_agg.empty:
-        if constants.COL_AUTHOR_ID not in df.columns and books_df is not None:
-            df = df.merge(
-                books_df[[constants.COL_BOOK_ID, constants.COL_AUTHOR_ID]],
-                on=constants.COL_BOOK_ID,
-                how='left'
-            )
+                    print(f"  Computed aggregates for {len(author_agg)} authors")
 
-        if constants.COL_AUTHOR_ID in df.columns:
-            df = df.merge(author_agg, on=constants.COL_AUTHOR_ID, how='left')
+                    # Добавляем author_id в df если его нет
+                    if constants.COL_AUTHOR_ID not in df.columns:
+                        df = df.merge(
+                            books_df[[constants.COL_BOOK_ID, constants.COL_AUTHOR_ID]],
+                            on=constants.COL_BOOK_ID,
+                            how='left'
+                        )
 
+                    # Мержим авторские агрегаты
+                    df = df.merge(author_agg, on=constants.COL_AUTHOR_ID, how='left')
+    except Exception as e:
+        print(f"  Warning: Could not load author aggregates: {e}")
+        print(f"  Error type: {type(e).__name__}")
+
+    # ========== ЗАПОЛНЕНИЕ ПРОПУСКОВ ==========
     user_na_mask = df[constants.F_USER_MEAN_RATING].isna()
     if user_na_mask.any():
         df.loc[user_na_mask, constants.F_USER_MEAN_RATING] = global_mean
         df.loc[user_na_mask, constants.F_USER_RATINGS_COUNT] = 0
+        df.loc[user_na_mask, constants.F_USER_SMOOTHED_MEAN] = global_mean
+        df.loc[user_na_mask, 'user_rating_percentile'] = 0.5
+        df.loc[user_na_mask, 'user_popularity_percentile'] = 0.5
 
     book_na_mask = df[constants.F_BOOK_MEAN_RATING].isna()
     if book_na_mask.any():
         df.loc[book_na_mask, constants.F_BOOK_MEAN_RATING] = global_mean * 1.05
         df.loc[book_na_mask, constants.F_BOOK_RATINGS_COUNT] = 0
+        df.loc[book_na_mask, constants.F_BOOK_SMOOTHED_MEAN] = global_mean * 1.05
+        df.loc[book_na_mask, 'book_rating_percentile'] = 0.5
+        df.loc[book_na_mask, 'book_popularity_percentile'] = 0.5
 
     if constants.F_AUTHOR_MEAN_RATING in df.columns:
         author_na_mask = df[constants.F_AUTHOR_MEAN_RATING].isna()
         if author_na_mask.any():
             df.loc[author_na_mask, constants.F_AUTHOR_MEAN_RATING] = global_mean
+            df.loc[author_na_mask, constants.F_AUTHOR_RATINGS_COUNT] = 0
+            if constants.F_AUTHOR_SMOOTHED_MEAN in df.columns:
+                df.loc[author_na_mask, constants.F_AUTHOR_SMOOTHED_MEAN] = global_mean
 
+    # ========== УЛУЧШЕНИЕ 3: STABILITY & RELIABILITY ==========
+    print("  Adding stability features...")
+
+    # User reliability (чем больше оценок, тем надежнее)
+    df['user_reliability_advanced'] = 1 - np.exp(-df[constants.F_USER_RATINGS_COUNT] / 8)
+
+    # Book reliability
+    df['book_reliability_advanced'] = 1 - np.exp(-df[constants.F_BOOK_RATINGS_COUNT] / 15)
+
+    # Author reliability (если есть)
+    if constants.F_AUTHOR_RATINGS_COUNT in df.columns:
+        df['author_reliability'] = 1 - np.exp(-df[constants.F_AUTHOR_RATINGS_COUNT] / 20)
+
+    # Combined reliability
+    reliability_cols = ['user_reliability_advanced', 'book_reliability_advanced']
+    if 'author_reliability' in df.columns:
+        reliability_cols.append('author_reliability')
+
+    df['combined_reliability_advanced'] = df[reliability_cols].mean(axis=1)
+
+    # ========== БАЗОВЫЕ INTERACTION FEATURES ==========
     print("Creating interaction features...")
 
     df['user_book_rating_diff'] = df[constants.F_USER_MEAN_RATING] - df[constants.F_BOOK_MEAN_RATING]
-
     df['user_book_rating_abs_diff'] = df['user_book_rating_diff'].abs()
-
     df['user_book_compatibility'] = 10 - df['user_book_rating_abs_diff']
 
+    # ========== УЛУЧШЕНИЕ 4: WEIGHTED INTERACTIONS ==========
+    print("  Adding weighted interactions...")
+
+    # Weighted differences using reliability
+    df['weighted_user_book_diff'] = (
+        df[constants.F_USER_MEAN_RATING] * df['user_reliability_advanced'] -
+        df[constants.F_BOOK_MEAN_RATING] * df['book_reliability_advanced']
+    )
+
+    # Weighted prediction
+    if 'user_reliability_advanced' in df.columns and 'book_reliability_advanced' in df.columns:
+        total_reliability = df['user_reliability_advanced'] + df['book_reliability_advanced'] + 1e-10
+        df['weighted_expected_rating'] = (
+            df[constants.F_USER_MEAN_RATING] * (df['user_reliability_advanced'] / total_reliability) +
+            df[constants.F_BOOK_MEAN_RATING] * (df['book_reliability_advanced'] / total_reliability)
+        )
+
+    # ========== УЛУЧШЕНИЕ 5: ADVANCED COMBINATIONS ==========
+    print("  Adding advanced combinations...")
+
+    # Percentile compatibility
+    if 'user_rating_percentile' in df.columns and 'book_rating_percentile' in df.columns:
+        df['percentile_compatibility'] = 1 - abs(df['user_rating_percentile'] - df['book_rating_percentile'])
+        df['percentile_similarity'] = df['user_rating_percentile'] * df['book_rating_percentile']
+
+    # Popularity interactions
     df['user_popularity_log'] = np.log1p(df[constants.F_USER_RATINGS_COUNT])
     df['book_popularity_log'] = np.log1p(df[constants.F_BOOK_RATINGS_COUNT])
     df['user_book_popularity_product'] = df['user_popularity_log'] * df['book_popularity_log']
 
-    df['user_reliability'] = 1 - np.exp(-df[constants.F_USER_RATINGS_COUNT] / 5)
+    if 'user_popularity_percentile' in df.columns and 'book_popularity_percentile' in df.columns:
+        df['popularity_alignment'] = df['user_popularity_percentile'] * df['book_popularity_percentile']
 
-    df['book_reliability'] = 1 - np.exp(-df[constants.F_BOOK_RATINGS_COUNT] / 10)
+    # Smoothed interactions
+    df['smoothed_user_book_diff'] = df[constants.F_USER_SMOOTHED_MEAN] - df[constants.F_BOOK_SMOOTHED_MEAN]
+    df['smoothed_user_book_abs_diff'] = df['smoothed_user_book_diff'].abs()
 
-    df['combined_reliability'] = df['user_reliability'] * 0.6 + df['book_reliability'] * 0.4
+    # ========== FINAL PREDICTION ENSEMBLE ==========
+    print("  Creating prediction ensemble...")
 
+    # Base expected rating
     if constants.F_AUTHOR_MEAN_RATING in df.columns:
         df['expected_rating'] = (
             df[constants.F_USER_MEAN_RATING] * 0.4 +
@@ -143,29 +251,253 @@ def add_aggregate_features(df: pd.DataFrame, train_df: pd.DataFrame) -> pd.DataF
             df[constants.F_BOOK_MEAN_RATING] * 0.5
         )
 
-    df['expected_rating'] = df['expected_rating'].clip(0, 10)
+    # Smoothed expected rating
+    if constants.F_AUTHOR_SMOOTHED_MEAN in df.columns:
+        df['expected_rating_smoothed'] = (
+            df[constants.F_USER_SMOOTHED_MEAN] * 0.4 +
+            df[constants.F_BOOK_SMOOTHED_MEAN] * 0.4 +
+            df[constants.F_AUTHOR_SMOOTHED_MEAN] * 0.2
+        )
+    else:
+        df['expected_rating_smoothed'] = (
+            df[constants.F_USER_SMOOTHED_MEAN] * 0.5 +
+            df[constants.F_BOOK_SMOOTHED_MEAN] * 0.5
+        )
 
+    # Reliability-adjusted rating
+    if 'weighted_expected_rating' in df.columns:
+        df['final_ensemble_rating'] = (
+            df['expected_rating'] * 0.3 +
+            df['expected_rating_smoothed'] * 0.3 +
+            df['weighted_expected_rating'] * 0.4
+        )
+    else:
+        df['final_ensemble_rating'] = (
+            df['expected_rating'] * 0.5 +
+            df['expected_rating_smoothed'] * 0.5
+        )
+
+    df['final_ensemble_rating'] = df['final_ensemble_rating'].clip(0, 10)
+
+    # ========== TEMPORAL FEATURES (если есть timestamp) ==========
+    if constants.COL_TIMESTAMP in df.columns:
+        print("  Adding temporal features...")
+
+        # Дни с последнего чтения (используем train_df для вычислений)
+        user_last_ts = train_df.groupby(constants.COL_USER_ID)[constants.COL_TIMESTAMP].max().reset_index()
+        user_last_ts.columns = [constants.COL_USER_ID, 'user_last_ts']
+
+        df = df.merge(user_last_ts, on=constants.COL_USER_ID, how='left')
+        df['days_since_last_read'] = (df[constants.COL_TIMESTAMP] - df['user_last_ts']).dt.days.abs()
+        df['log_days_since_last'] = np.log1p(df['days_since_last_read'])
+        df = df.drop('user_last_ts', axis=1)
+
+        # Активность пользователя
+        df['user_recently_active'] = (df['days_since_last_read'] <= 30).astype(int)
+
+        # Взаимодействие с надежностью
+        df['active_reliable'] = df['user_recently_active'] * df['user_reliability_advanced']
+
+    # ========== FINAL STATS ==========
     feature_cols = [
+        # Базовые
         constants.F_USER_MEAN_RATING, constants.F_USER_RATINGS_COUNT,
         constants.F_BOOK_MEAN_RATING, constants.F_BOOK_RATINGS_COUNT,
+
+        # Smoothed
+        constants.F_USER_SMOOTHED_MEAN, constants.F_BOOK_SMOOTHED_MEAN,
+
+        # Percentiles
+        'user_rating_percentile', 'book_rating_percentile',
+        'user_popularity_percentile', 'book_popularity_percentile',
+
+        # Reliability
+        'user_reliability_advanced', 'book_reliability_advanced',
+        'combined_reliability_advanced',
+
+        # Interactions
         'user_book_rating_diff', 'user_book_rating_abs_diff',
         'user_book_compatibility', 'user_book_popularity_product',
-        'user_reliability', 'book_reliability', 'combined_reliability',
-        'expected_rating'
+        'weighted_user_book_diff', 'weighted_expected_rating',
+        'percentile_compatibility', 'percentile_similarity',
+        'smoothed_user_book_diff', 'smoothed_user_book_abs_diff',
+        'popularity_alignment',
+
+        # Predictions
+        'expected_rating', 'expected_rating_smoothed', 'final_ensemble_rating',
     ]
 
-    # Добавляем author фичу, если есть
+    # Добавляем author фичи если есть
     if constants.F_AUTHOR_MEAN_RATING in df.columns:
-        feature_cols.append(constants.F_AUTHOR_MEAN_RATING)
+        feature_cols.extend([
+            constants.F_AUTHOR_MEAN_RATING, constants.F_AUTHOR_RATINGS_COUNT,
+            constants.F_AUTHOR_SMOOTHED_MEAN, 'author_reliability'
+        ])
+
+    # Добавляем temporal фичи если есть
+    if 'days_since_last_read' in df.columns:
+        feature_cols.extend([
+            'days_since_last_read', 'log_days_since_last',
+            'user_recently_active', 'active_reliable'
+        ])
 
     num_features = len([c for c in feature_cols if c in df.columns])
 
-    print(f" Added {num_features} safe aggregate features")
+    print(f"✅ Added {num_features} enhanced aggregate features")
     print(f"   Global mean: {global_mean:.3f}")
     print(f"   Global std: {global_std:.3f}")
     print(f"   User coverage: {(~user_na_mask).mean():.2%}")
     print(f"   Book coverage: {(~book_na_mask).mean():.2%}")
 
+    if 'author_reliability' in df.columns:
+        print(f"   Author coverage: {(~df[constants.F_AUTHOR_MEAN_RATING].isna()).mean():.2%}")
+
+    return df
+
+
+def add_temporal_master_features(df: pd.DataFrame, train_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    ВРЕМЕННЫЕ ФИЧИ - САМЫЙ БОЛЬШОЙ ПРИРОСТ МЕТРИКИ
+    Добавляет 7 мощных временных фич без leakage
+    """
+    print("Adding TEMPORAL MASTER features...")
+
+    # 1. Возраст книги на момент чтения (ТОП-1 фича)
+    if all(col in df.columns for col in [constants.COL_TIMESTAMP, constants.COL_PUBLICATION_YEAR]):
+        df['timestamp_year'] = df[constants.COL_TIMESTAMP].dt.year
+        df['book_age_at_reading'] = df['timestamp_year'] - df[constants.COL_PUBLICATION_YEAR]
+        df['book_age_at_reading'] = df['book_age_at_reading'].clip(0, 150)
+
+        # Логарифмированный возраст
+        df['log_book_age'] = np.log1p(df['book_age_at_reading'])
+
+        # Возрастные категории
+        df['book_age_category'] = pd.cut(
+            df['book_age_at_reading'],
+            bins=[0, 1, 5, 10, 20, 50, 150],
+            labels=['new', 'recent', 'modern', 'established', 'classic', 'antique']
+        )
+        df = pd.get_dummies(df, columns=['book_age_category'], prefix='age_cat')
+
+    # 2. Дни с последнего чтения пользователя (ТОП-2 фича)
+    if constants.COL_TIMESTAMP in train_df.columns:
+        # Последняя активность пользователя в train
+        user_last_ts = train_df.groupby(constants.COL_USER_ID)[constants.COL_TIMESTAMP].max().reset_index()
+        user_last_ts.columns = [constants.COL_USER_ID, 'user_last_ts']
+
+        df = df.merge(user_last_ts, on=constants.COL_USER_ID, how='left')
+
+        if constants.COL_TIMESTAMP in df.columns:
+            # Базовый признак
+            df['days_since_last_read'] = (df[constants.COL_TIMESTAMP] - df['user_last_ts']).dt.days.abs()
+
+            # Трансформированные версии
+            df['log_days_since_last'] = np.log1p(df['days_since_last_read'])
+            df['sqrt_days_since_last'] = np.sqrt(df['days_since_last_read'])
+
+            # Активность пользователя
+            df['user_recently_active_7d'] = (df['days_since_last_read'] <= 7).astype(int)
+            df['user_recently_active_30d'] = (df['days_since_last_read'] <= 30).astype(int)
+            df['user_inactive_90d'] = (df['days_since_last_read'] > 90).astype(int)
+
+            df = df.drop('user_last_ts', axis=1)
+
+    # 3. Время года / день недели (сезонность)
+    if constants.COL_TIMESTAMP in df.columns:
+        df['reading_month'] = df[constants.COL_TIMESTAMP].dt.month
+        df['reading_dayofweek'] = df[constants.COL_TIMESTAMP].dt.dayofweek
+        df['reading_hour'] = df[constants.COL_TIMESTAMP].dt.hour
+
+        # Сезонные категории
+        df['reading_season'] = df['reading_month'].map({
+            12: 'winter', 1: 'winter', 2: 'winter',
+            3: 'spring', 4: 'spring', 5: 'spring',
+            6: 'summer', 7: 'summer', 8: 'summer',
+            9: 'autumn', 10: 'autumn', 11: 'autumn'
+        })
+        df = pd.get_dummies(df, columns=['reading_season'], prefix='season')
+
+    print(
+        f"  Added {len([c for c in df.columns if 'days_since' in c or 'age' in c or 'reading_' in c])} temporal features")
+    return df
+
+
+def add_smart_smoothing_features(df: pd.DataFrame, train_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    УМНОЕ СГЛАЖИВАНИЕ - УЛУЧШАЕТ РЕДКИХ ПОЛЬЗОВАТЕЛЕЙ/КНИГИ
+    Динамическая регуляризация на основе доверительных интервалов
+    """
+    print("Adding SMART SMOOTHING features...")
+
+    train_read = train_df[train_df[constants.COL_HAS_READ] == 1].copy()
+    global_mean = train_read[config.TARGET].mean()
+    global_std = train_read[config.TARGET].std()
+
+    # 1. Bayesian Smoothing с динамическим weight
+    user_stats = train_read.groupby(constants.COL_USER_ID)[config.TARGET].agg(['mean', 'count', 'std']).reset_index()
+    user_stats.columns = [constants.COL_USER_ID, 'user_raw_mean', 'user_count', 'user_std']
+
+    # Динамический smoothing factor: чем меньше count, тем сильнее сглаживание
+    user_stats['user_smoothing_weight'] = 10 / (1 + np.log1p(user_stats['user_count']))
+    user_stats['user_bayesian_mean'] = (
+        (user_stats['user_raw_mean'] * user_stats['user_count'] +
+         global_mean * user_stats['user_smoothing_weight']) /
+        (user_stats['user_count'] + user_stats['user_smoothing_weight'])
+    )
+
+    # 2. Wilson Confidence Interval для пользователей
+    # (дает более консервативные оценки для редких случаев)
+    def wilson_ci(mean, count, confidence=0.95):
+        z = 1.96  # для 95% доверительного интервала
+        p = mean / 10  # нормализуем к [0,1]
+        denominator = 1 + z ** 2 / count
+        centre = p + z ** 2 / (2 * count)
+        half_width = z * np.sqrt((p * (1 - p) + z ** 2 / (4 * count)) / count)
+        lower = (centre - half_width) / denominator
+        return lower * 10  # возвращаем к шкале [0,10]
+
+    user_stats['user_wilson_lower'] = user_stats.apply(
+        lambda x: wilson_ci(x['user_raw_mean'], x['user_count']), axis=1
+    )
+
+    # 3. Аналогично для книг
+    book_stats = train_read.groupby(constants.COL_BOOK_ID)[config.TARGET].agg(['mean', 'count', 'std']).reset_index()
+    book_stats.columns = [constants.COL_BOOK_ID, 'book_raw_mean', 'book_count', 'book_std']
+
+    book_stats['book_smoothing_weight'] = 20 / (1 + np.log1p(book_stats['book_count']))
+    book_stats['book_bayesian_mean'] = (
+        (book_stats['book_raw_mean'] * book_stats['book_count'] +
+         global_mean * book_stats['book_smoothing_weight']) /
+        (book_stats['book_count'] + book_stats['book_smoothing_weight'])
+    )
+
+    book_stats['book_wilson_lower'] = book_stats.apply(
+        lambda x: wilson_ci(x['book_raw_mean'], x['book_count']), axis=1
+    )
+
+    # 4. Мержим smoothed фичи
+    df = df.merge(
+        user_stats[[constants.COL_USER_ID, 'user_bayesian_mean', 'user_wilson_lower', 'user_smoothing_weight']],
+        on=constants.COL_USER_ID, how='left'
+    )
+
+    df = df.merge(
+        book_stats[[constants.COL_BOOK_ID, 'book_bayesian_mean', 'book_wilson_lower', 'book_smoothing_weight']],
+        on=constants.COL_BOOK_ID, how='left'
+    )
+
+    # 5. Заполняем пропуски
+    df['user_bayesian_mean'] = df['user_bayesian_mean'].fillna(global_mean)
+    df['user_wilson_lower'] = df['user_wilson_lower'].fillna(global_mean * 0.9)
+    df['book_bayesian_mean'] = df['book_bayesian_mean'].fillna(global_mean)
+    df['book_wilson_lower'] = df['book_wilson_lower'].fillna(global_mean * 0.9)
+
+    # 6. Создаем комбинированные фичи
+    df['smoothed_user_book_diff'] = df['user_bayesian_mean'] - df['book_bayesian_mean']
+    df['conservative_estimate'] = (df['user_wilson_lower'] + df['book_wilson_lower']) / 2
+
+    print(
+        f"  Added {len([c for c in df.columns if 'bayesian' in c or 'wilson' in c or 'smoothing' in c])} smoothing features")
     return df
 
 
@@ -462,6 +794,8 @@ def create_features(
         df = add_aggregate_features(df, train_df)
 
     df = add_genre_features(df, book_genres_df)
+    #df = add_temporal_master_features(df, train_df)
+    #df = add_smart_smoothing_features(df, train_df)
     df = add_text_features(df, train_df, descriptions_df)
     df = add_nomic_features(df, train_df, descriptions_df)
     df = handle_missing_values(df, train_df)

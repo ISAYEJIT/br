@@ -60,41 +60,48 @@ PREDICTION_MIN_VALUE = 0
 PREDICTION_MAX_VALUE = 10
 
 
-F_USER_RATING_STD = "user_rating_std"
-F_USER_MIN_RATING = "user_min_rating"
-F_USER_MAX_RATING = "user_max_rating"
-F_USER_RATING_RANGE = "user_rating_range"
-F_USER_RELIABILITY = "user_reliability"
-F_USER_BIAS = "user_bias"
-F_USER_SHRUNK_MEAN = "user_shrunk_mean"
-F_USER_RATING_TREND = "user_rating_trend"
-F_USER_RECENCY_DAYS = "user_recency_days"
-F_USER_RATING_FREQUENCY = "user_rating_frequency"
+# Добавьте эти константы в соответствующие разделы:
 
-# Book features
-F_BOOK_RATING_STD = "book_rating_std"
-F_BOOK_MIN_RATING = "book_min_rating"
-F_BOOK_MAX_RATING = "book_max_rating"
-F_BOOK_RATING_RANGE = "book_rating_range"
-F_BOOK_POPULARITY = "book_popularity"
-F_BOOK_CONTROVERSIAL = "book_controversial"
-F_BOOK_SHRUNK_MEAN = "book_shrunk_mean"
-F_BOOK_QUALITY_SCORE = "book_quality_score"
+# User features - ДОБАВИТЬ:
+F_USER_SMOOTHED_MEAN = "user_smoothed_mean"
+F_USER_BAYESIAN_MEAN = "user_bayesian_mean"
+F_USER_RATING_PERCENTILE = "user_rating_percentile"
+F_USER_POPULARITY_PERCENTILE = "user_popularity_percentile"
+F_USER_RELIABILITY_ADVANCED = "user_reliability_advanced"
+F_USER_STABILITY_SCORE = "user_stability_score"
 
-# Author features
+# Book features - ДОБАВИТЬ:
+F_BOOK_SMOOTHED_MEAN = "book_smoothed_mean"
+F_BOOK_BAYESIAN_MEAN = "book_bayesian_mean"
+F_BOOK_RATING_PERCENTILE = "book_rating_percentile"
+F_BOOK_POPULARITY_PERCENTILE = "book_popularity_percentile"
+F_BOOK_RELIABILITY_ADVANCED = "book_reliability_advanced"
+F_BOOK_AGE = "book_age_at_reading"
+
+F_AUTHOR_SMOOTHED_MEAN = "author_smoothed_mean"
+F_AUTHOR_MEAN_RATING = "author_mean_rating"
 F_AUTHOR_RATINGS_COUNT = "author_ratings_count"
 F_AUTHOR_RATING_STD = "author_rating_std"
 F_AUTHOR_POPULARITY = "author_popularity"
 F_AUTHOR_RELIABILITY = "author_reliability"
 
-# Interaction features
-F_HAS_READ_AUTHOR = "has_read_author"
-F_USER_BOOK_RATING_DIFF = "user_book_rating_diff"
-F_USER_BOOK_RATING_ABS_DIFF = "user_book_rating_abs_diff"
-F_USER_BOOK_COMPATIBILITY = "user_book_compatibility"
-F_USER_BOOK_POPULARITY_PRODUCT = "user_book_popularity_product"
+# Temporal features - ДОБАВИТЬ:
+F_DAYS_SINCE_LAST_READ = "days_since_last_read"
+F_LOG_DAYS_SINCE_LAST = "log_days_since_last"
+F_USER_RECENTLY_ACTIVE = "user_recently_active"
 
-# Combined features
-F_COMBINED_RELIABILITY = "combined_reliability"
-F_EXPECTED_RATING = "expected_rating"
-F_PREDICTION_UNCERTAINTY = "prediction_uncertainty"
+F_WEIGHTED_USER_BOOK_DIFF = "weighted_user_book_diff"
+F_WEIGHTED_EXPECTED_RATING = "weighted_expected_rating"
+F_SMOOTHED_USER_BOOK_DIFF = "smoothed_user_book_diff"
+F_PERCENTILE_COMPATIBILITY = "percentile_compatibility"
+F_PERCENTILE_SIMILARITY = "percentile_similarity"
+F_POPULARITY_ALIGNMENT = "popularity_alignment"
+F_ACTIVE_RELIABLE = "active_reliable"
+
+F_EXPECTED_RATING_SMOOTHED = "expected_rating_smoothed"
+F_FINAL_ENSEMBLE_RATING = "final_ensemble_rating"
+
+F_USER_RATING_BIAS = "user_rating_bias"
+F_BOOK_RATING_BIAS = "book_rating_bias"
+F_RATING_STYLE_DIFFERENCE = "rating_style_difference"
+F_RATING_STYLE_COMPATIBILITY = "rating_style_compatibility"
